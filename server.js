@@ -272,6 +272,18 @@ app.get('/attendance/:studentId', async (req, res) => {
   }
 });
 
+// 🚀 8.5 Delete Student (Naya API)
+app.delete('/delete-student/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query("DELETE FROM students WHERE id = $1", [id]);
+    res.json({ success: true, message: 'Student deleted successfully!' });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ success: false, message: 'Server error deleting student' });
+  }
+});
+
 // ==========================================
 // 🚀 NAYE STAFF API ROUTES
 // ==========================================
@@ -347,6 +359,18 @@ app.post('/pay-staff-salary', async (req, res) => {
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// 🚀 13. Delete Staff (Naya API)
+app.delete('/delete-staff/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query("DELETE FROM staff WHERE id = $1", [id]);
+    res.json({ success: true, message: 'Staff deleted successfully!' });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ success: false, message: 'Server error deleting staff' });
   }
 });
 
