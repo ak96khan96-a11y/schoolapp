@@ -374,6 +374,19 @@ app.delete('/delete-staff/:id', async (req, res) => {
   }
 });
 
+// 14. Get Single Staff Attendance (Calendar ke liye)
+app.get('/staff-attendance/:staffId', async (req, res) => {
+  try {
+    const staffId = req.params.staffId;
+    const records = await pool.query(
+      "SELECT date, status FROM staff_attendance WHERE staff_id = $1",
+      [staffId]
+    );
+    res.json({ success: true, data: records.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
 // ==========================================
 // Server Start
 // ==========================================
