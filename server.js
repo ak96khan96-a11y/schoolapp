@@ -374,6 +374,21 @@ app.delete('/delete-staff/:id', async (req, res) => {
   }
 });
 
+// 11.5 Check Today's Staff Attendance Lock
+app.get('/check-staff-attendance/:date', async (req, res) => {
+  try {
+    const { date } = req.params;
+    const { school_id } = req.query;
+    const records = await pool.query(
+      "SELECT * FROM staff_attendance WHERE date = $1 AND school_id = $2",
+      [date, school_id]
+    );
+    res.json({ success: true, submitted: records.rows.length > 0, data: records.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 // 14. Get Single Staff Attendance (Calendar ke liye)
 app.get('/staff-attendance/:staffId', async (req, res) => {
   try {
