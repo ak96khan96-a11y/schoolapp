@@ -11,15 +11,28 @@ app.use(express.json());
 // ==========================================
 const createTables = async () => {
   try {
+    // 1. Schools Table (With Subscription Columns)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS schools (
         id SERIAL PRIMARY KEY,
         school_name VARCHAR(255) NOT NULL,
         mobile VARCHAR(15) NOT NULL,
         address TEXT NOT NULL,
-        email VARCHAR(255) UNIQUE NOT NULL
+        email VARCHAR(255) UNIQUE NOT NULL,
+        plan_name VARCHAR(50) DEFAULT 'Free',
+        plan_status VARCHAR(20) DEFAULT 'Active',
+        plan_expiry DATE
       );
     `);
+
+    // 🚀 SMART UPDATER: Agar purani schools table hai, toh usme subscription ke column add kar dega bina data delete kiye
+    try {
+      await pool.query(`ALTER TABLE schools ADD COLUMN plan_name VARCHAR(50) DEFAULT 'Free'`);
+      await pool.query(`ALTER TABLE schools ADD COLUMN plan_status VARCHAR(20) DEFAULT 'Active'`);
+      await pool.query(`ALTER TABLE schools ADD COLUMN plan_expiry DATE`);
+    } catch (e) {
+      // Agar columns pehle se hain, toh yeh error ko ignore kar dega (Safe mode)
+    }
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS students (
@@ -54,7 +67,45 @@ const createTables = async () => {
       );
     `);
 
-    console.log("✅ Database Tables Ready (100% Data Isolation Active!)");
+    // ==========================================
+    // 🚀 NAYI STAFF TABLES 
+    // ==========================================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS staff (
+        id SERIAL PRIMARY KEY,
+        school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        mobile VARCHAR(15) NOT NULL,
+        role VARCHAR(100),
+        monthly_salary NUMERIC NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS staff_attendance (
+        id SERIAL PRIMARY KEY,
+        school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
+        staff_id INTEGER REFERENCES staff(id) ON DELETE CASCADE,
+        date DATE NOT NULL,
+        status VARCHAR(10) NOT NULL, 
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(staff_id, date) 
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS staff_salary (
+        id SERIAL PRIMARY KEY,
+        school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
+        staff_id INTEGER REFERENCES staff(id) ON DELETE CASCADE,
+        amount NUMERIC NOT NULL,
+        date DATE NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    console.log("✅ All Database Tables Ready (Staff & Subscriptions Active!)");
   } catch (err) {
     console.error("❌ Error creating tables:", err.message);
   }
@@ -97,6 +148,21 @@ app.post('/login-school', async (req, res) => {
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ success: false, message: 'Server Error' });
+  }
+});
+
+// 🚀 2.5 Update Subscription (Naya API)
+app.post('/update-subscription', async (req, res) => {
+  try {
+    const { school_id, plan_name, plan_status, plan_expiry } = req.body;
+    await pool.query(
+      "UPDATE schools SET plan_name = $1, plan_status = $2, plan_expiry = $3 WHERE id = $4",
+      [plan_name, plan_status, plan_expiry, school_id]
+    );
+    res.json({ success: true, message: 'Subscription successfully updated!' });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ success: false, message: 'Server error updating subscription' });
   }
 });
 
@@ -200,6 +266,84 @@ app.get('/attendance/:studentId', async (req, res) => {
       [studentId]
     );
     res.json({ success: true, data: records.rows });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// ==========================================
+// 🚀 NAYE STAFF API ROUTES
+// ==========================================
+
+// 9. Add Staff
+app.post('/add-staff', async (req, res) => {
+  try {
+    const { school_id, name, mobile, role, monthly_salary } = req.body;
+    const newStaff = await pool.query(
+      `INSERT INTO staff (school_id, name, mobile, role, monthly_salary) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [school_id, name, mobile, role, monthly_salary]
+    );
+    res.status(201).json({ success: true, data: newStaff.rows[0] });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// 10. Get Staff List
+app.get('/staff', async (req, res) => {
+  try {
+    const { school_id } = req.query;
+    const staffList = await pool.query(
+      "SELECT * FROM staff WHERE school_id = $1 ORDER BY name ASC",
+      [school_id]
+    );
+    res.json({ success: true, data: staffList.rows });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// 11. Save Staff Attendance
+app.post('/mark-staff-attendance', async (req, res) => {
+  try {
+    const { school_id, date, records } = req.body;
+    for (const staffId in records) {
+      const status = records[staffId];
+      const checkResult = await pool.query(
+        "SELECT * FROM staff_attendance WHERE staff_id = $1 AND date = $2 AND school_id = $3",
+        [staffId, date, school_id]
+      );
+      if (checkResult.rows.length > 0) {
+        await pool.query(
+          "UPDATE staff_attendance SET status = $1 WHERE staff_id = $2 AND date = $3 AND school_id = $4",
+          [status, staffId, date, school_id]
+        );
+      } else {
+        await pool.query(
+          "INSERT INTO staff_attendance (school_id, staff_id, date, status) VALUES ($1, $2, $3, $4)",
+          [school_id, staffId, date, status]
+        );
+      }
+    }
+    res.json({ success: true, message: 'Staff Attendance Saved!' });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// 12. Pay Staff Salary
+app.post('/pay-staff-salary', async (req, res) => {
+  try {
+    const { school_id, staff_id, amount, date } = req.body;
+    await pool.query(
+      "INSERT INTO staff_salary (school_id, staff_id, amount, date) VALUES ($1, $2, $3, $4)",
+      [school_id, staff_id, amount, date]
+    );
+    res.json({ success: true, message: 'Staff Salary paid successfully!' });
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ success: false, message: 'Server error' });
