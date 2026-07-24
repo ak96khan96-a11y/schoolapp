@@ -199,16 +199,32 @@ app.get('/students/:classId', async (req, res) => {
 
 // 5. Pay Fee
 app.post('/pay-fee', async (req, res) => {
+  const client = await pool.connect(); // Database se secure connection banaya
   try {
     const { school_id, student_id, amount, date } = req.body;
-    await pool.query(
+    
+    await client.query('BEGIN'); // Transaction Shuru (Dono kaam ek sath honge)
+
+    // Step 1: History table me entry dalna
+    await client.query(
       "INSERT INTO fees (school_id, student_id, amount, payment_date) VALUES ($1, $2, $3, $4)",
       [school_id, student_id, amount, date]
     );
-    res.json({ success: true, message: 'Fee paid successfully!' });
+
+    // Step 2: Student ki yearly_fee me se paid amount ghatana (Minus karna)
+    await client.query(
+      "UPDATE students SET yearly_fee = yearly_fee - $1 WHERE id = $2 AND school_id = $3",
+      [amount, student_id, school_id]
+    );
+
+    await client.query('COMMIT'); // Dono step pass hone par data save kar do
+    res.json({ success: true, message: 'Fee paid and balance updated successfully!' });
   } catch (err) {
+    await client.query('ROLLBACK'); // Agar kisi step me error aayi toh sab cancel kar do
     console.error(err.message);
     res.status(500).json({ success: false, message: 'Server error' });
+  } finally {
+    client.release(); // Connection wapas free kar do
   }
 });
 
@@ -347,18 +363,35 @@ app.post('/mark-staff-attendance', async (req, res) => {
   }
 });
 
+
 // 12. Pay Staff Salary
 app.post('/pay-staff-salary', async (req, res) => {
+  const client = await pool.connect();
   try {
     const { school_id, staff_id, amount, date } = req.body;
-    await pool.query(
+    
+    await client.query('BEGIN'); // Transaction Shuru
+
+    // Step 1: Salary history table me entry dalna
+    await client.query(
       "INSERT INTO staff_salary (school_id, staff_id, amount, date) VALUES ($1, $2, $3, $4)",
       [school_id, staff_id, amount, date]
     );
-    res.json({ success: true, message: 'Staff Salary paid successfully!' });
+
+    // Step 2: Staff ki monthly_salary me se paid amount ghatana (Minus karna)
+    await client.query(
+      "UPDATE staff SET monthly_salary = monthly_salary - $1 WHERE id = $2 AND school_id = $3",
+      [amount, staff_id, school_id]
+    );
+
+    await client.query('COMMIT'); // Save kar do
+    res.json({ success: true, message: 'Staff Salary paid and balance updated successfully!' });
   } catch (err) {
+    await client.query('ROLLBACK'); // Error aane par cancel
     console.error(err.message);
     res.status(500).json({ success: false, message: 'Server error' });
+  } finally {
+    client.release();
   }
 });
 
