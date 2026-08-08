@@ -7,14 +7,17 @@ app.use(cors());
 app.use(express.json());
 
 // ==========================================
-// 🚀 Database Tables Creation (With Data Isolation)
+// 🚀 Database Tables Creation (UUID / Multi-Tenant Security)
 // ==========================================
 const createTables = async () => {
   try {
-    // 1. Schools Table (With Subscription Columns)
+    // 🚀 Postgres extension for generating UUIDs automatically
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`);
+
+    // 1. Schools Table (With UUID)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS schools (
-        id SERIAL PRIMARY KEY,
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         school_name VARCHAR(255) NOT NULL,
         mobile VARCHAR(15) NOT NULL,
         address TEXT NOT NULL,
@@ -25,19 +28,18 @@ const createTables = async () => {
       );
     `);
 
-    // 🚀 SMART UPDATER: Agar purani schools table hai, toh usme subscription ke column add kar dega bina data delete kiye
+    // 🚀 SMART UPDATER for existing columns (Safe Mode)
     try {
       await pool.query(`ALTER TABLE schools ADD COLUMN plan_name VARCHAR(50) DEFAULT 'Free'`);
       await pool.query(`ALTER TABLE schools ADD COLUMN plan_status VARCHAR(20) DEFAULT 'Active'`);
       await pool.query(`ALTER TABLE schools ADD COLUMN plan_expiry DATE`);
-    } catch (e) {
-      // Agar columns pehle se hain, toh yeh error ko ignore kar dega (Safe mode)
-    }
+    } catch (e) {}
 
+    // 2. Students Table (Linked with UUID)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS students (
-        id SERIAL PRIMARY KEY,
-        school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        school_id UUID REFERENCES schools(id) ON DELETE CASCADE,
         student_name VARCHAR(100) NOT NULL,
         class VARCHAR(20) NOT NULL,
         roll_no VARCHAR(20) NOT NULL,
@@ -46,34 +48,37 @@ const createTables = async () => {
       );
     `);
 
+    // 3. Student Attendance Table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS attendance (
-        id SERIAL PRIMARY KEY,
-        school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
-        student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        school_id UUID REFERENCES schools(id) ON DELETE CASCADE,
+        student_id UUID REFERENCES students(id) ON DELETE CASCADE,
         class_id VARCHAR(20) NOT NULL,
         date DATE NOT NULL,
         status VARCHAR(5) NOT NULL
       );
     `);
 
+    // 4. Fees Ledger Table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS fees (
-        id SERIAL PRIMARY KEY,
-        school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
-        student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        school_id UUID REFERENCES schools(id) ON DELETE CASCADE,
+        student_id UUID REFERENCES students(id) ON DELETE CASCADE,
         amount INTEGER NOT NULL,
-        payment_date DATE NOT NULL
+        payment_date DATE NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
     // ==========================================
-    // 🚀 NAYI STAFF TABLES 
+    // 🚀 STAFF TABLES (Linked with UUID)
     // ==========================================
     await pool.query(`
       CREATE TABLE IF NOT EXISTS staff (
-        id SERIAL PRIMARY KEY,
-        school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        school_id UUID REFERENCES schools(id) ON DELETE CASCADE,
         name VARCHAR(255) NOT NULL,
         mobile VARCHAR(15) NOT NULL,
         role VARCHAR(100),
@@ -84,9 +89,9 @@ const createTables = async () => {
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS staff_attendance (
-        id SERIAL PRIMARY KEY,
-        school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
-        staff_id INTEGER REFERENCES staff(id) ON DELETE CASCADE,
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        school_id UUID REFERENCES schools(id) ON DELETE CASCADE,
+        staff_id UUID REFERENCES staff(id) ON DELETE CASCADE,
         date DATE NOT NULL,
         status VARCHAR(10) NOT NULL, 
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -96,16 +101,16 @@ const createTables = async () => {
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS staff_salary (
-        id SERIAL PRIMARY KEY,
-        school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
-        staff_id INTEGER REFERENCES staff(id) ON DELETE CASCADE,
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        school_id UUID REFERENCES schools(id) ON DELETE CASCADE,
+        staff_id UUID REFERENCES staff(id) ON DELETE CASCADE,
         amount NUMERIC NOT NULL,
         date DATE NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
-    console.log("✅ All Database Tables Ready (Staff & Subscriptions Active!)");
+    console.log("✅ All Database Tables Ready (UUID Security & Subscriptions Active!)");
   } catch (err) {
     console.error("❌ Error creating tables:", err.message);
   }
@@ -114,7 +119,7 @@ const createTables = async () => {
 createTables();
 
 // ==========================================
-// API Routes
+// 🚀 API Routes (Works seamlessly with UUIDs now)
 // ==========================================
 
 // 1. Register School
@@ -151,7 +156,7 @@ app.post('/login-school', async (req, res) => {
   }
 });
 
-// 🚀 2.5 Update Subscription (Naya API)
+// 2.5 Update Subscription
 app.post('/update-subscription', async (req, res) => {
   try {
     const { school_id, plan_name, plan_status, plan_expiry } = req.body;
@@ -186,11 +191,23 @@ app.get('/students/:classId', async (req, res) => {
   try {
     const { classId } = req.params;
     const { school_id } = req.query; 
+    
     const studentsData = await pool.query(
-      "SELECT * FROM students WHERE class = $1 AND school_id = $2 ORDER BY student_name ASC",
+      `SELECT s.*, 
+        COALESCE((SELECT SUM(amount) FROM fees WHERE student_id = s.id AND school_id = $2), 0) AS total_paid
+       FROM students s 
+       WHERE s.class = $1 AND s.school_id = $2 
+       ORDER BY s.student_name ASC`,
       [classId, school_id]
     );
-    res.json({ success: true, data: studentsData.rows });
+
+    const formattedStudents = studentsData.rows.map(student => ({
+      ...student,
+      original_total_fee: student.yearly_fee, 
+      yearly_fee: student.yearly_fee - student.total_paid 
+    }));
+
+    res.json({ success: true, data: formattedStudents });
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -199,33 +216,17 @@ app.get('/students/:classId', async (req, res) => {
 
 // 5. Pay Fee
 app.post('/pay-fee', async (req, res) => {
-  const client = await pool.connect(); // Database se secure connection banaya
   try {
     const { school_id, student_id, amount, date } = req.body;
-    
-    await client.query('BEGIN'); // Transaction Shuru (Dono kaam ek sath honge)
-
-    // Step 1: History table me entry dalna
-    await client.query(
+    await pool.query(
       "INSERT INTO fees (school_id, student_id, amount, payment_date) VALUES ($1, $2, $3, $4)",
       [school_id, student_id, amount, date]
     );
-
-    // Step 2: Student ki yearly_fee me se paid amount ghatana (Minus karna)
-    await client.query(
-      "UPDATE students SET yearly_fee = yearly_fee - $1 WHERE id = $2 AND school_id = $3",
-      [amount, student_id, school_id]
-    );
-
-    await client.query('COMMIT'); // Dono step pass hone par data save kar do
-    res.json({ success: true, message: 'Fee paid and balance updated successfully!' });
+    res.json({ success: true, message: 'Fee payment recorded successfully in ledger!' });
   } catch (err) {
-    await client.query('ROLLBACK'); // Agar kisi step me error aayi toh sab cancel kar do
     console.error(err.message);
     res.status(500).json({ success: false, message: 'Server error' });
-  } finally {
-    client.release(); // Connection wapas free kar do
-  }
+  } 
 });
 
 // 6. Check Today's Attendance Lock
@@ -288,7 +289,7 @@ app.get('/attendance/:studentId', async (req, res) => {
   }
 });
 
-// 🚀 8.5 Delete Student (Naya API)
+// 8.5 Delete Student
 app.delete('/delete-student/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -301,7 +302,7 @@ app.delete('/delete-student/:id', async (req, res) => {
 });
 
 // ==========================================
-// 🚀 NAYE STAFF API ROUTES
+// 🚀 STAFF API ROUTES
 // ==========================================
 
 // 9. Add Staff
@@ -324,10 +325,21 @@ app.get('/staff', async (req, res) => {
   try {
     const { school_id } = req.query;
     const staffList = await pool.query(
-      "SELECT * FROM staff WHERE school_id = $1 ORDER BY name ASC",
+      `SELECT st.*, 
+        COALESCE((SELECT SUM(amount) FROM staff_salary WHERE staff_id = st.id AND school_id = $1), 0) AS total_paid
+       FROM staff st 
+       WHERE st.school_id = $1 
+       ORDER BY st.name ASC`,
       [school_id]
     );
-    res.json({ success: true, data: staffList.rows });
+
+    const formattedStaff = staffList.rows.map(staff => ({
+      ...staff,
+      original_total_salary: staff.monthly_salary, 
+      monthly_salary: staff.monthly_salary - staff.total_paid 
+    }));
+
+    res.json({ success: true, data: formattedStaff });
   } catch (err) {
     console.error(err.message);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -363,39 +375,22 @@ app.post('/mark-staff-attendance', async (req, res) => {
   }
 });
 
-
 // 12. Pay Staff Salary
 app.post('/pay-staff-salary', async (req, res) => {
-  const client = await pool.connect();
   try {
     const { school_id, staff_id, amount, date } = req.body;
-    
-    await client.query('BEGIN'); // Transaction Shuru
-
-    // Step 1: Salary history table me entry dalna
-    await client.query(
+    await pool.query(
       "INSERT INTO staff_salary (school_id, staff_id, amount, date) VALUES ($1, $2, $3, $4)",
       [school_id, staff_id, amount, date]
     );
-
-    // Step 2: Staff ki monthly_salary me se paid amount ghatana (Minus karna)
-    await client.query(
-      "UPDATE staff SET monthly_salary = monthly_salary - $1 WHERE id = $2 AND school_id = $3",
-      [amount, staff_id, school_id]
-    );
-
-    await client.query('COMMIT'); // Save kar do
-    res.json({ success: true, message: 'Staff Salary paid and balance updated successfully!' });
+    res.json({ success: true, message: 'Staff Salary recorded successfully in ledger!' });
   } catch (err) {
-    await client.query('ROLLBACK'); // Error aane par cancel
     console.error(err.message);
     res.status(500).json({ success: false, message: 'Server error' });
-  } finally {
-    client.release();
-  }
+  } 
 });
 
-// 🚀 13. Delete Staff (Naya API)
+// 13. Delete Staff
 app.delete('/delete-staff/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -422,7 +417,7 @@ app.get('/check-staff-attendance/:date', async (req, res) => {
   }
 });
 
-// 14. Get Single Staff Attendance (Calendar ke liye)
+// 14. Get Single Staff Attendance
 app.get('/staff-attendance/:staffId', async (req, res) => {
   try {
     const staffId = req.params.staffId;
@@ -435,6 +430,41 @@ app.get('/staff-attendance/:staffId', async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
+
+// 15. Get Fee History for a Student
+app.get('/fee-history/:studentId', async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const { school_id } = req.query; 
+    
+    const history = await pool.query(
+      "SELECT id, amount, payment_date FROM fees WHERE student_id = $1 AND school_id = $2 ORDER BY payment_date DESC, id DESC",
+      [studentId, school_id]
+    );
+    res.json({ success: true, data: history.rows });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ success: false, message: 'Server error fetching fee history' });
+  }
+});
+
+// 16. Get Salary History for Staff
+app.get('/salary-history/:staffId', async (req, res) => {
+  try {
+    const { staffId } = req.params;
+    const { school_id } = req.query; 
+    
+    const history = await pool.query(
+      "SELECT id, amount, date FROM staff_salary WHERE staff_id = $1 AND school_id = $2 ORDER BY date DESC, id DESC",
+      [staffId, school_id]
+    );
+    res.json({ success: true, data: history.rows });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ success: false, message: 'Server error fetching salary history' });
+  }
+});
+
 // ==========================================
 // Server Start
 // ==========================================
